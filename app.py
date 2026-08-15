@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import time
@@ -28,6 +29,9 @@ manager = ModuleManager(ROOT, REGISTRY, CONFIG_LOCAL)
 pipeline = PipelineEngine(manager)
 INSTANCE_ID = uuid.uuid4().hex[:12]
 STARTED_AT = time.time()
+
+# Source first, then downstream. Speaker must stop before TTS API.
+PIPELINE_STOP_ORDER = ("tiktok", "stt", "tts_speaker", "translate", "tts_api")
 
 
 def load_profiles() -> list[dict[str, Any]]:
@@ -85,6 +89,67 @@ def ensure_started(
     return result
 
 
+def modules_for_config(config: dict[str, Any] | None) -> set[str]:
+    config = config or {}
+    module_ids: set[str] = set()
+    source = config.get("source")
+    if source == "tiktok":
+        module_ids.add("tiktok")
+    elif source == "stt":
+        module_ids.add("stt")
+
+    if config.get("translate"):
+        module_ids.add("translate")
+    if config.get("tts"):
+        module_ids.update({"tts_api", "tts_speaker"})
+    return module_ids
+
+
+def _prepare_stt_stop() -> None:
+    current = manager.health("stt", timeout=0.25)
+    if not current.get("managed") or not current.get("port"):
+        return
+    try:
+        requests.post(manager.endpoint("stt", "/api/release"), json={}, timeout=2)
+    except Exception:
+        pass
+    try:
+        manager.launch_helper("stt", "close")
+    except Exception:
+        pass
+
+
+def stop_managed_modules(module_ids: set[str] | list[str] | tuple[str, ...]) -> list[dict[str, Any]]:
+    """Stop only processes owned by this Hub instance.
+
+    Externally attached modules remain alive and attached; STOP only freezes the
+    pipeline for those endpoints. This prevents Hub from killing a user-managed
+    service that it did not start.
+    """
+    wanted = set(module_ids)
+    results: list[dict[str, Any]] = []
+    for module_id in PIPELINE_STOP_ORDER:
+        if module_id not in wanted:
+            continue
+        current = manager.health(module_id, timeout=0.25)
+        if current.get("origin") == "external":
+            results.append(
+                {
+                    "module": module_id,
+                    "ok": True,
+                    "external": True,
+                    "stopped": False,
+                    "port": current.get("port"),
+                }
+            )
+            continue
+        if module_id == "stt" and current.get("managed"):
+            _prepare_stt_stop()
+        result = manager.stop(module_id)
+        results.append({"module": module_id, **result})
+    return results
+
+
 def start_stt(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Keep the STT HTTP server owned by Hub; Chrome is only a helper process."""
     results: list[dict[str, Any]] = []
@@ -92,9 +157,6 @@ def start_stt(config: dict[str, Any]) -> list[dict[str, Any]]:
     if source_mode not in {"mic", "pc", "server"}:
         source_mode = "mic"
 
-    # START_SERVER_ONLY blocks and remains owned by ModuleManager, so its dynamic
-    # port can be stopped/released reliably. The Chrome launcher sees this server
-    # already online and therefore does not create a second orphaned server.
     results.append(ensure_started("stt", mode="server", wait_seconds=15))
 
     if source_mode in {"mic", "pc"}:
@@ -168,19 +230,31 @@ def start_source(config: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def validate_connected_modules(config: dict[str, Any]) -> None:
-    required: list[str] = []
-    if config.get("translate"):
-        required.append("translate")
-    if config.get("tts"):
-        required.extend(["tts_api", "tts_speaker"])
-    if config.get("source") == "stt":
-        required.append("stt")
-    elif config.get("source") == "tiktok":
-        required.append("tiktok")
-
+    required = modules_for_config(config)
     missing = [module_id for module_id in required if not manager.health(module_id, 0.6)["online"]]
     if missing:
-        raise RuntimeError("Module chưa online: " + ", ".join(missing))
+        raise RuntimeError("Module chưa online: " + ", ".join(sorted(missing)))
+
+
+def cleanup_on_exit() -> None:
+    """Best-effort cleanup when RUN.cmd/Hub exits normally or by Ctrl+C."""
+    try:
+        pipeline.stop()
+    except Exception:
+        pass
+    try:
+        managed_now = {
+            module_id
+            for module_id in manager.registry
+            if manager.processes.get(module_id) is not None
+            and manager.processes[module_id].poll() is None
+        }
+        stop_managed_modules(managed_now)
+    except Exception:
+        pass
+
+
+atexit.register(cleanup_on_exit)
 
 
 @app.get("/")
@@ -286,14 +360,7 @@ def api_module_stop(module_id: str):
     try:
         current = manager.health(module_id, timeout=0.3)
         if module_id == "stt" and current.get("managed") and current.get("port"):
-            try:
-                requests.post(manager.endpoint("stt", "/api/release"), json={}, timeout=2)
-            except Exception:
-                pass
-            try:
-                manager.launch_helper("stt", "close")
-            except Exception:
-                pass
+            _prepare_stt_stop()
         return jsonify(manager.stop(module_id))
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
@@ -332,7 +399,21 @@ def api_pipeline_start():
     data = request.get_json(silent=True) or {}
     config = data.get("config") or data
     auto_start = bool(data.get("auto_start", True))
+
+    previous_config = dict(pipeline.config)
     pipeline.stop()
+    stopped: list[dict[str, Any]] = []
+
+    # Clean modules owned by the previous pipeline first. This prevents a stale
+    # TikTok process from continuing with an old username or old WEBHOOK_URLS.
+    if previous_config:
+        stopped.extend(stop_managed_modules(modules_for_config(previous_config)))
+
+    # Auto-start means Hub owns this session. Restart all required managed
+    # modules so every run receives fresh dynamic ports, username and endpoints.
+    if auto_start:
+        stopped.extend(stop_managed_modules(modules_for_config(config)))
+
     try:
         started: list[dict[str, Any]] = []
         if auto_start:
@@ -347,20 +428,36 @@ def api_pipeline_start():
                 "ok": True,
                 "active": True,
                 "config": config,
+                "stopped_previous": stopped,
                 "started": started,
                 "allocated_ports": manager.ports.snapshot(),
             }
         )
     except Exception as exc:
         pipeline.stop()
+        # Do not leave partially-started modules behind when one dependency or
+        # source fails during pipeline startup.
+        if auto_start:
+            stop_managed_modules(modules_for_config(config))
+        pipeline.config = {}
         pipeline.log("error", f"Pipeline start: {exc}")
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @app.post("/api/pipeline/stop")
 def api_pipeline_stop():
+    config = dict(pipeline.config)
     pipeline.stop()
-    return jsonify({"ok": True, "active": False})
+    stopped = stop_managed_modules(modules_for_config(config))
+    pipeline.config = {}
+    return jsonify(
+        {
+            "ok": True,
+            "active": False,
+            "stopped": stopped,
+            "allocated_ports": manager.ports.snapshot(),
+        }
+    )
 
 
 @app.get("/api/events")
@@ -380,8 +477,8 @@ def tiktok_event():
         return jsonify(result)
     except Exception as exc:
         pipeline.log("error", f"TikTok event: {exc}", event=event)
-        # Middleware should receive 2xx so a downstream TTS/Translate failure does
-        # not cause an event retry storm.
+        # Middleware should receive 2xx so a downstream failure does not trigger
+        # a webhook retry storm.
         return jsonify({"ok": False, "accepted": True, "error": str(exc)}), 200
 
 
