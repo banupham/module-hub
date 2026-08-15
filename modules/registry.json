@@ -11,6 +11,7 @@
       "health_path": "/api/health",
       "start": {"default": ["cmd", "/c", "start_live.bat", "{username}"]},
       "env": {
+        "MODULE_HUB_MANAGED": "1",
         "COLLECTOR_MODE": "direct",
         "WEBHOOK_TIMEOUT_MS": "3000",
         "WEBHOOK_RETRY_COUNT": "1"
@@ -29,7 +30,8 @@
         "pc": ["cmd", "/c", "START_PC_AUDIO.cmd"],
         "server": ["cmd", "/c", "START_SERVER_ONLY.cmd"],
         "close": ["cmd", "/c", "CLOSE_BROWSER.cmd"]
-      }
+      },
+      "env": {"MODULE_HUB_MANAGED": "1"}
     },
     "translate": {
       "name": "Google Translate RPC",
@@ -39,7 +41,8 @@
       "role": "processor",
       "port_env": "TRANSLATE_PORT",
       "health_path": "/health",
-      "start": {"default": ["cmd", "/c", "START_API.cmd"]}
+      "start": {"default": ["cmd", "/c", "START_API.cmd"]},
+      "env": {"MODULE_HUB_MANAGED": "1"}
     },
     "tts_api": {
       "name": "Google TTS API",
@@ -50,7 +53,8 @@
       "role": "processor",
       "port_env": "TTS_API_PORT",
       "health_path": "/health",
-      "start": {"default": ["cmd", "/c", "START_TTS_API.cmd"]}
+      "start": {"default": ["cmd", "/c", "START_TTS_API.cmd"]},
+      "env": {"MODULE_HUB_MANAGED": "1"}
     },
     "tts_speaker": {
       "name": "Google TTS Speaker",
@@ -60,7 +64,8 @@
       "role": "output",
       "port_env": "LOA_API_PORT",
       "health_path": "/health",
-      "start": {"default": ["cmd", "/c", "START_SPEAKER.cmd"]}
+      "start": {"default": ["cmd", "/c", "START_SPEAKER.cmd"]},
+      "env": {"MODULE_HUB_MANAGED": "1"}
     }
   }
 }
