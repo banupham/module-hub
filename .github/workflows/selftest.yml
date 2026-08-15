@@ -31,6 +31,9 @@ jobs:
       - name: Test dynamic port allocator
         shell: python
         run: |
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path.cwd()))
           from core.ports import PortAllocator
           allocator = PortAllocator()
           first = allocator.allocate('first')
@@ -39,6 +42,7 @@ jobs:
           assert allocator.get('first') == first
           allocator.release('first')
           assert allocator.get('first') is None
-          allocator.attach('external', 65500)
-          assert allocator.get('external') == 65500
-          print('PORT_ALLOCATOR_OK', first, second)
+          external = 65500 if 65500 not in {first, second} else 65499
+          allocator.attach('external', external)
+          assert allocator.get('external') == external
+          print('PORT_ALLOCATOR_OK', first, second, external)
