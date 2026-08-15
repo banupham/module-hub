@@ -1,0 +1,44 @@
+name: Module Hub selftest
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m py_compile app.py core/module_manager.py core/pipeline.py core/ports.py adapters/http_adapters.py
+      - name: Validate registry
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          data = json.loads(Path('modules/registry.json').read_text(encoding='utf-8'))
+          assert data['hub_version'] == '0.2.0'
+          for module_id, item in data['modules'].items():
+              assert item.get('port_env'), module_id
+              assert item.get('health_path'), module_id
+          print('REGISTRY_OK')
+      - name: Test dynamic port allocator
+        shell: python
+        run: |
+          from core.ports import PortAllocator
+          allocator = PortAllocator()
+          first = allocator.allocate('first')
+          second = allocator.allocate('second')
+          assert first != second
+          assert allocator.get('first') == first
+          allocator.release('first')
+          assert allocator.get('first') is None
+          allocator.attach('external', 65500)
+          assert allocator.get('external') == 65500
+          print('PORT_ALLOCATOR_OK', first, second)
