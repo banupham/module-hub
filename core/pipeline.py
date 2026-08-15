@@ -38,9 +38,51 @@ class PipelineEngine:
         with self.lock:
             return list(self.events)[: max(1, min(limit, 200))]
 
+    def _sync_tts_language(self) -> None:
+        """Make the Speaker language follow this pipeline's output language.
+
+        The Google TTS API already accepts dynamic `lang`; the Speaker keeps a
+        standalone persisted setting. Hub updates only that language while
+        preserving voice/filter/chunk settings configured in the Speaker UI.
+        """
+        if not self.config.get("tts"):
+            return
+
+        lang = str(
+            self.config.get("tts_lang")
+            or self.config.get("target_lang")
+            or "vi"
+        ).strip() or "vi"
+
+        settings_url = self.manager.endpoint("tts_speaker", "/api/settings")
+        response = requests.get(settings_url, timeout=4)
+        response.raise_for_status()
+        current = response.json()
+
+        allowed = {
+            "lang",
+            "voice",
+            "read_username",
+            "chunk_chars",
+            "normalize_abbreviations",
+            "custom_replacements",
+            "blocked_phrases",
+        }
+        payload = {key: value for key, value in current.items() if key in allowed}
+        payload["lang"] = lang
+
+        response = requests.post(settings_url, json=payload, timeout=4)
+        response.raise_for_status()
+        result = response.json()
+        if not result.get("ok", True):
+            raise RuntimeError(result.get("error") or "tts_language_sync_failed")
+
+        self.log("config", f"TTS language: {lang}", tts_lang=lang)
+
     def start(self, config: dict[str, Any]) -> None:
         self.stop()
         self.config = dict(config)
+        self._sync_tts_language()
         self.active = True
         self.stop_event.clear()
         self.last_stt_seq = 0
@@ -124,7 +166,8 @@ class PipelineEngine:
         if self.config.get("tts"):
             event_url = self.manager.endpoint("tts_speaker", "/tiktok-event")
             tts_result = self.tts_adapter.speak_event(event_url, event, output_text)
-            self.log("output", f"TTS queued: {output_text}", result=tts_result)
+            lang = self.config.get("tts_lang") or self.config.get("target_lang", "vi")
+            self.log("output", f"TTS[{lang}] queued: {output_text}", result=tts_result)
 
         return {
             "ok": True,
