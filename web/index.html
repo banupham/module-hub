@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Module Hub</title>
+  <link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div>
+        <h1>Module Hub</h1>
+        <p>Kết nối các module đã PASS bằng một giao diện.</p>
+      </div>
+      <div id="hubStatus" class="pill">Đang kiểm tra…</div>
+    </header>
+
+    <section class="panel">
+      <div class="panel-title">
+        <h2>Module</h2>
+        <button id="refreshBtn">Làm mới trạng thái</button>
+      </div>
+      <div id="modules" class="module-grid"></div>
+      <div class="path-actions">
+        <button id="savePathsBtn" class="primary">Lưu đường dẫn</button>
+        <span class="hint">Có thể đặt các repo cạnh module-hub để tự nhận đường dẫn.</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Pipeline</h2>
+      <div class="form-grid">
+        <label>Profile
+          <select id="profileSelect"></select>
+        </label>
+        <label>Nguồn
+          <select id="sourceSelect">
+            <option value="tiktok">TikTok LIVE</option>
+            <option value="stt">Google STT</option>
+          </select>
+        </label>
+        <label id="tiktokUserWrap">TikTok username
+          <input id="tiktokUsername" placeholder="nhuquynh230794">
+        </label>
+        <label id="sttSourceWrap" class="hidden">Nguồn STT
+          <select id="sttSource">
+            <option value="mic">Microphone</option>
+            <option value="pc">Âm thanh PC</option>
+          </select>
+        </label>
+        <label class="check-row">
+          <input id="translateEnabled" type="checkbox">
+          <span>Dùng Google Translate</span>
+        </label>
+        <label>Ngôn ngữ đích
+          <select id="targetLang">
+            <option value="vi">Tiếng Việt (vi)</option>
+            <option value="en">English (en)</option>
+            <option value="ja">日本語 (ja)</option>
+            <option value="ko">한국어 (ko)</option>
+            <option value="zh-CN">中文简体 (zh-CN)</option>
+            <option value="ru">Русский (ru)</option>
+          </select>
+        </label>
+        <label class="check-row">
+          <input id="ttsEnabled" type="checkbox" checked>
+          <span>Phát qua Google TTS Speaker</span>
+        </label>
+        <label class="check-row">
+          <input id="autoStart" type="checkbox" checked>
+          <span>Tự khởi động module cần thiết</span>
+        </label>
+      </div>
+      <div class="buttons">
+        <button id="startPipeline" class="primary big">▶ START</button>
+        <button id="stopPipeline" class="danger big">■ STOP</button>
+      </div>
+      <div id="pipelineState" class="pipeline-state">Pipeline chưa chạy.</div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">
+        <h2>Event log</h2>
+        <span class="hint">Tự cập nhật mỗi 2 giây</span>
+      </div>
+      <div id="events" class="events"></div>
+    </section>
+  </main>
+  <script src="/web/app.js"></script>
+</body>
+</html>
