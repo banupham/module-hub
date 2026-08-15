@@ -23,7 +23,7 @@ jobs:
           import json
           from pathlib import Path
           data = json.loads(Path('modules/registry.json').read_text(encoding='utf-8'))
-          assert data['hub_version'] == '0.2.0'
+          assert data['hub_version'] == '0.2.1'
           for module_id, item in data['modules'].items():
               assert item.get('port_env'), module_id
               assert item.get('health_path'), module_id
@@ -46,3 +46,21 @@ jobs:
           allocator.attach('external', external)
           assert allocator.get('external') == external
           print('PORT_ALLOCATOR_OK', first, second, external)
+      - name: Test stopped pipeline rejects intake before logging
+        shell: python
+        run: |
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path.cwd()))
+          from core.pipeline import PipelineEngine
+          class DummyManager:
+              pass
+          pipeline = PipelineEngine(DummyManager())
+          before = len(pipeline.events)
+          result = pipeline.process_event({
+              'eventType': 'comment',
+              'payload': {'text': 'SHOULD_NOT_LOG'}
+          })
+          assert result['pipeline_active'] is False
+          assert len(pipeline.events) == before
+          print('STOPPED_PIPELINE_INTAKE_OK')
