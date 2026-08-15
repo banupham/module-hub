@@ -12,7 +12,8 @@ from adapters.http_adapters import TTSSpeakerAdapter, TranslateAdapter
 
 
 class PipelineEngine:
-    def __init__(self):
+    def __init__(self, module_manager):
+        self.manager = module_manager
         self.translate_adapter = TranslateAdapter()
         self.tts_adapter = TTSSpeakerAdapter()
         self.active = False
@@ -42,6 +43,7 @@ class PipelineEngine:
         self.config = dict(config)
         self.active = True
         self.stop_event.clear()
+        self.last_stt_seq = 0
         self.log("pipeline", "Pipeline started", config=self.config)
         if self.config.get("source") == "stt":
             self.poll_thread = threading.Thread(target=self._poll_stt, daemon=True, name="stt-poller")
@@ -58,8 +60,9 @@ class PipelineEngine:
     def _poll_stt(self) -> None:
         while self.active and not self.stop_event.is_set():
             try:
+                result_url = self.manager.endpoint("stt", "/api/result")
                 response = requests.get(
-                    "http://127.0.0.1:8091/api/result",
+                    result_url,
                     params={"after": self.last_stt_seq, "timeout": 20},
                     timeout=25,
                 )
@@ -99,7 +102,11 @@ class PipelineEngine:
         output_text = text
         translation = None
         if self.config.get("translate"):
+            translate_base = self.manager.base_url("translate")
+            if not translate_base:
+                raise RuntimeError("Translate module chưa có runtime endpoint")
             translation = self.translate_adapter.translate(
+                translate_base,
                 text,
                 source=self.config.get("source_lang", "auto"),
                 target=self.config.get("target_lang", "vi"),
@@ -110,7 +117,8 @@ class PipelineEngine:
 
         tts_result = None
         if self.config.get("tts"):
-            tts_result = self.tts_adapter.speak_event(event, output_text)
+            event_url = self.manager.endpoint("tts_speaker", "/tiktok-event")
+            tts_result = self.tts_adapter.speak_event(event_url, event, output_text)
             self.log("output", f"TTS queued: {output_text}", result=tts_result)
 
         return {
