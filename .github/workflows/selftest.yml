@@ -23,7 +23,8 @@ jobs:
           import json
           from pathlib import Path
           data = json.loads(Path('modules/registry.json').read_text(encoding='utf-8'))
-          assert data['hub_version'] == '0.2.3'
+          assert data['hub_version'] == '0.3.0'
+          assert data['modules']['stt']['version'] == '2.7'
           for module_id, item in data['modules'].items():
               assert item.get('port_env'), module_id
               assert item.get('health_path'), module_id
@@ -64,7 +65,7 @@ jobs:
           assert result['pipeline_active'] is False
           assert len(pipeline.events) == before
           print('STOPPED_PIPELINE_INTAKE_OK')
-      - name: Test STT startup waits for dynamic port without error
+      - name: Test STT push is default and does not start poller
         shell: python
         run: |
           import sys, time
@@ -73,18 +74,39 @@ jobs:
           from core.pipeline import PipelineEngine
 
           class DummyManager:
-              def port(self, module_id):
-                  return None
-              def health(self, module_id, timeout=0):
-                  return {'online': False}
+              def port(self, module_id): return None
+              def health(self, module_id, timeout=0): return {'online': False}
 
           pipeline = PipelineEngine(DummyManager())
           pipeline.start({'source': 'stt', 'tts': False, 'translate': False})
-          time.sleep(0.7)
-          errors = [e for e in pipeline.recent(20) if e.get('kind') == 'error']
+          time.sleep(0.1)
+          assert pipeline.poll_thread is None
           pipeline.stop()
-          assert errors == [], errors
-          print('STT_STARTUP_WAIT_OK')
+          print('STT_PUSH_DEFAULT_OK')
+      - name: Test STT pushed sentence becomes one Hub event
+        shell: python
+        run: |
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path.cwd()))
+          from core.pipeline import PipelineEngine
+
+          class DummyManager:
+              pass
+
+          pipeline = PipelineEngine(DummyManager())
+          sentence = {
+              'instanceId': 'abc123',
+              'seq': 7,
+              'text': 'hello world',
+              'lang': 'en-US',
+              'detectedLang': 'en-US',
+          }
+          event = pipeline.stt_sentence_to_event(sentence)
+          assert event['eventId'] == 'stt-abc123-7'
+          assert event['payload']['text'] == 'hello world'
+          assert event['payload']['detectedLang'] == 'en-US'
+          print('STT_PUSH_EVENT_OK')
       - name: Test output language reaches TTS Speaker settings
         shell: python
         run: |
