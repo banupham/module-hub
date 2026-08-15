@@ -1,5 +1,5 @@
 {
-  "hub_version": "0.2.2",
+  "hub_version": "0.2.3",
   "modules": {
     "tiktok": {
       "name": "TikTok LIVE Middleware",
