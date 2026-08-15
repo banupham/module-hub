@@ -27,7 +27,8 @@
       "start": {
         "mic": ["cmd", "/c", "START_MIC.cmd"],
         "pc": ["cmd", "/c", "START_PC_AUDIO.cmd"],
-        "server": ["cmd", "/c", "START_SERVER_ONLY.cmd"]
+        "server": ["cmd", "/c", "START_SERVER_ONLY.cmd"],
+        "close": ["cmd", "/c", "CLOSE_BROWSER.cmd"]
       }
     },
     "translate": {
