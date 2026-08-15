@@ -1,5 +1,5 @@
 {
-  "hub_version": "0.2.3",
+  "hub_version": "0.3.0",
   "modules": {
     "tiktok": {
       "name": "TikTok LIVE Middleware",
@@ -19,7 +19,7 @@
     },
     "stt": {
       "name": "Google STT Bridge",
-      "version": "2.6",
+      "version": "2.7",
       "repo": "banupham/google-stt-bridge",
       "repo_key": "stt",
       "role": "input",
