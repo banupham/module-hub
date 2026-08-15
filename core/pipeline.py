@@ -99,9 +99,33 @@ class PipelineEngine:
             thread.join(timeout=1.0)
         self.poll_thread = None
 
-    def _poll_stt(self) -> None:
+    def _wait_stt_ready(self) -> bool:
+        """Wait quietly while Hub assigns/starts the STT dynamic endpoint."""
         while self.active and not self.stop_event.is_set():
             try:
+                if self.manager.port("stt") is None:
+                    self.stop_event.wait(0.2)
+                    continue
+                health = self.manager.health("stt", timeout=0.5)
+                if health.get("online"):
+                    return True
+            except Exception:
+                pass
+            self.stop_event.wait(0.25)
+        return False
+
+    def _poll_stt(self) -> None:
+        # pipeline.start() can run a fraction of a second before start_source()
+        # has allocated the STT port. That is normal startup, not an error.
+        if not self._wait_stt_ready():
+            return
+
+        while self.active and not self.stop_event.is_set():
+            try:
+                if self.manager.port("stt") is None:
+                    if not self._wait_stt_ready():
+                        return
+
                 result_url = self.manager.endpoint("stt", "/api/result")
                 response = requests.get(
                     result_url,
@@ -129,6 +153,14 @@ class PipelineEngine:
                 self.process_event(event)
             except Exception as exc:
                 if self.active and not self.stop_event.is_set():
+                    try:
+                        health = self.manager.health("stt", timeout=0.4)
+                    except Exception:
+                        health = {"online": False}
+                    if not health.get("online"):
+                        if not self._wait_stt_ready():
+                            return
+                        continue
                     self.log("error", f"STT poll: {exc}")
                 self.stop_event.wait(1.5)
 
