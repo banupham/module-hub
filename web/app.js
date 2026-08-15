@@ -151,6 +151,8 @@ function toggleSourceFields() {
   const source = document.getElementById('sourceSelect').value;
   document.getElementById('tiktokUserWrap').classList.toggle('hidden', source !== 'tiktok');
   document.getElementById('sttSourceWrap').classList.toggle('hidden', source !== 'stt');
+  document.getElementById('sttLangWrap').classList.toggle('hidden', source !== 'stt');
+  document.getElementById('sttAutoHint').classList.toggle('hidden', source !== 'stt');
 }
 
 function applyProfile(profile) {
@@ -160,6 +162,7 @@ function applyProfile(profile) {
   document.getElementById('targetLang').value = profile.target_lang || profile.tts_lang || 'vi';
   document.getElementById('ttsEnabled').checked = profile.tts !== false;
   if (profile.stt_source) document.getElementById('sttSource').value = profile.stt_source;
+  if (profile.stt_lang) document.getElementById('sttLang').value = profile.stt_lang;
   toggleSourceFields();
 }
 
@@ -189,7 +192,8 @@ function pipelineConfig() {
     source: document.getElementById('sourceSelect').value,
     tiktok_username: document.getElementById('tiktokUsername').value.trim(),
     stt_source: document.getElementById('sttSource').value,
-    stt_lang: 'en-US',
+    stt_lang: document.getElementById('sttLang').value || 'auto',
+    stt_transport: 'push',
     stt_sensitivity: 'balanced',
     translate: document.getElementById('translateEnabled').checked,
     source_lang: 'auto',
@@ -213,7 +217,8 @@ async function startPipeline() {
       }),
     });
     const ports = Object.entries(data.allocated_ports || {}).map(([k, v]) => `${k}:${v}`).join(' · ');
-    stateBox.textContent = `RUNNING · output:${config.tts_lang}${ports ? ' · ' + ports : ''}`;
+    const sttInfo = config.source === 'stt' ? ` · input:${config.stt_lang} · stt:push` : '';
+    stateBox.textContent = `RUNNING${sttInfo} · output:${config.tts_lang}${ports ? ' · ' + ports : ''}`;
     stateBox.className = 'pipeline-state running';
     await refreshModules();
   } catch (err) {
