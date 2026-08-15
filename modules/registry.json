@@ -1,5 +1,5 @@
 {
-  "hub_version": "0.1.0",
+  "hub_version": "0.2.0",
   "modules": {
     "tiktok": {
       "name": "TikTok LIVE Middleware",
@@ -7,11 +7,11 @@
       "repo": "banupham/tiktok_live_cmd_active_viewers_v9",
       "repo_key": "tiktok",
       "role": "input",
-      "health_url": "http://127.0.0.1:8787/api/health",
+      "port_env": "API_PORT",
+      "health_path": "/api/health",
       "start": {"default": ["cmd", "/c", "start_live.bat", "{username}"]},
       "env": {
         "COLLECTOR_MODE": "direct",
-        "WEBHOOK_URLS": "http://127.0.0.1:8899/tiktok-event",
         "WEBHOOK_TIMEOUT_MS": "3000",
         "WEBHOOK_RETRY_COUNT": "1"
       }
@@ -22,7 +22,8 @@
       "repo": "banupham/google-stt-bridge",
       "repo_key": "stt",
       "role": "input",
-      "health_url": "http://127.0.0.1:8091/health",
+      "port_env": "STT_PORT",
+      "health_path": "/health",
       "start": {
         "mic": ["cmd", "/c", "START_MIC.cmd"],
         "pc": ["cmd", "/c", "START_PC_AUDIO.cmd"],
@@ -35,7 +36,8 @@
       "repo": "banupham/google-translate-rpc",
       "repo_key": "translate",
       "role": "processor",
-      "health_url": "http://127.0.0.1:8080/health",
+      "port_env": "TRANSLATE_PORT",
+      "health_path": "/health",
       "start": {"default": ["cmd", "/c", "START_API.cmd"]}
     },
     "tts_api": {
@@ -45,7 +47,8 @@
       "repo_key": "tts",
       "cwd_suffix": "tts_api",
       "role": "processor",
-      "health_url": "http://127.0.0.1:8090/health",
+      "port_env": "TTS_API_PORT",
+      "health_path": "/health",
       "start": {"default": ["cmd", "/c", "START_TTS_API.cmd"]}
     },
     "tts_speaker": {
@@ -54,7 +57,8 @@
       "repo": "banupham/google_loa_tts",
       "repo_key": "tts",
       "role": "output",
-      "health_url": "http://127.0.0.1:9000/health",
+      "port_env": "LOA_API_PORT",
+      "health_path": "/health",
       "start": {"default": ["cmd", "/c", "START_SPEAKER.cmd"]}
     }
   }
