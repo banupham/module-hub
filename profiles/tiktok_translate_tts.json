@@ -1,0 +1,8 @@
+{
+  "id": "tiktok_translate_tts",
+  "name": "TikTok → Dịch → TTS",
+  "source": "tiktok",
+  "translate": true,
+  "target_lang": "vi",
+  "tts": true
+}
