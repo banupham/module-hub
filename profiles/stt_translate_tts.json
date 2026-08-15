@@ -3,7 +3,11 @@
   "name": "STT → Dịch → TTS",
   "source": "stt",
   "stt_source": "mic",
+  "stt_lang": "auto",
+  "stt_transport": "push",
   "translate": true,
+  "source_lang": "auto",
   "target_lang": "vi",
-  "tts": true
+  "tts": true,
+  "tts_lang": "vi"
 }
