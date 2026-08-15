@@ -23,7 +23,7 @@ jobs:
           import json
           from pathlib import Path
           data = json.loads(Path('modules/registry.json').read_text(encoding='utf-8'))
-          assert data['hub_version'] == '0.2.1'
+          assert data['hub_version'] == '0.2.2'
           for module_id, item in data['modules'].items():
               assert item.get('port_env'), module_id
               assert item.get('health_path'), module_id
@@ -64,3 +64,57 @@ jobs:
           assert result['pipeline_active'] is False
           assert len(pipeline.events) == before
           print('STOPPED_PIPELINE_INTAKE_OK')
+      - name: Test output language reaches TTS Speaker settings
+        shell: python
+        run: |
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path.cwd()))
+          import core.pipeline as pipeline_module
+          from core.pipeline import PipelineEngine
+
+          captured = {}
+
+          class DummyResponse:
+              def __init__(self, data): self.data = data
+              def raise_for_status(self): return None
+              def json(self): return self.data
+
+          class DummyRequests:
+              @staticmethod
+              def get(url, timeout=0):
+                  return DummyResponse({
+                      'lang': 'vi',
+                      'voice': 'default',
+                      'read_username': False,
+                      'chunk_chars': 80,
+                      'normalize_abbreviations': True,
+                      'custom_replacements': {},
+                      'blocked_phrases': [],
+                      'default_abbreviations': {'ko': 'không'},
+                  })
+              @staticmethod
+              def post(url, json=None, timeout=0):
+                  captured['url'] = url
+                  captured['json'] = dict(json or {})
+                  return DummyResponse({'ok': True, 'settings': captured['json']})
+
+          class DummyManager:
+              def endpoint(self, module_id, path=''):
+                  assert module_id == 'tts_speaker'
+                  return 'http://127.0.0.1:54321' + path
+
+          original = pipeline_module.requests
+          pipeline_module.requests = DummyRequests
+          try:
+              pipeline = PipelineEngine(DummyManager())
+              pipeline.config = {'tts': True, 'target_lang': 'en', 'tts_lang': 'ja'}
+              pipeline._sync_tts_language()
+          finally:
+              pipeline_module.requests = original
+
+          assert captured['url'].endswith('/api/settings')
+          assert captured['json']['lang'] == 'ja'
+          assert captured['json']['voice'] == 'default'
+          assert 'default_abbreviations' not in captured['json']
+          print('TTS_LANGUAGE_SYNC_OK', captured['json']['lang'])
