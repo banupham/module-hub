@@ -68,7 +68,7 @@ class ModuleManager:
         variants = item.get("start", {})
         command = variants.get(mode) or variants.get("default")
         if not command:
-            raise ValueError(f"Module {module_id} không có lệnh start mode={mode}")
+            raise ValueError(f"Module {module_id} không có lệnh mode={mode}")
         formatted = []
         for part in command:
             try:
@@ -76,6 +76,26 @@ class ModuleManager:
             except KeyError as exc:
                 raise ValueError(f"Thiếu tham số {exc.args[0]} cho {module_id}") from exc
         return formatted
+
+    def _build_env(
+        self,
+        module_id: str,
+        *,
+        extra_env: dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
+        item = self.registry[module_id]
+        env = os.environ.copy()
+        env.update({str(k): str(v) for k, v in item.get("env", {}).items()})
+        port = self.port(module_id)
+        port_env = item.get("port_env")
+        if port is not None and port_env:
+            env[str(port_env)] = str(port)
+        if extra_env:
+            env.update({str(k): str(v) for k, v in extra_env.items()})
+        if options:
+            env.update({str(k): str(v) for k, v in options.get("env", {}).items()})
+        return env
 
     def port(self, module_id: str) -> int | None:
         return self.ports.get(module_id)
@@ -138,7 +158,6 @@ class ModuleManager:
                     "base_url": self.base_url(module_id),
                 }
 
-            # Clear stale managed runtime state before allocating a new port.
             if existing and existing.poll() is not None:
                 self.processes.pop(module_id, None)
                 handle = self.logs.pop(module_id, None)
@@ -150,8 +169,6 @@ class ModuleManager:
                 self.ports.release(module_id)
                 self.runtime_origin.pop(module_id, None)
 
-            # An externally attached endpoint must be detached first; otherwise a
-            # new process could accidentally target an occupied external port.
             if self.runtime_origin.get(module_id) == "external":
                 raise RuntimeError(f"{module_id} đang attach tới port {self.port(module_id)}")
 
@@ -162,13 +179,7 @@ class ModuleManager:
             port = self.ports.allocate(module_id, requested=requested_port)
             item = self.registry[module_id]
             command = self._format_command(module_id, mode, options)
-            env = os.environ.copy()
-            env.update({str(k): str(v) for k, v in item.get("env", {}).items()})
-            port_env = item.get("port_env")
-            if port_env:
-                env[str(port_env)] = str(port)
-            env.update({str(k): str(v) for k, v in extra_env.items()})
-            env.update({str(k): str(v) for k, v in options.get("env", {}).items()})
+            env = self._build_env(module_id, extra_env=extra_env, options=options)
 
             log_dir = self.root / "logs"
             log_dir.mkdir(exist_ok=True)
@@ -211,11 +222,69 @@ class ModuleManager:
                 "cwd": str(cwd),
             }
 
+    def launch_helper(
+        self,
+        module_id: str,
+        mode: str,
+        *,
+        options: dict[str, Any] | None = None,
+        extra_env: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Launch a short-lived helper against an already assigned module port.
+
+        Used by STT: Hub owns START_SERVER_ONLY.cmd as the managed process, while
+        START_MIC/START_PC_AUDIO only open/configure the Chrome client on the same
+        dynamic port. The helper may exit without orphaning the managed server.
+        """
+        options = options or {}
+        with self.lock:
+            if module_id not in self.registry:
+                raise KeyError(module_id)
+            if self.port(module_id) is None:
+                raise RuntimeError(f"{module_id} chưa có runtime port")
+            cwd = self._cwd(module_id)
+            if not cwd.exists():
+                raise FileNotFoundError(f"Không thấy thư mục module: {cwd}")
+            command = self._format_command(module_id, mode, options)
+            env = self._build_env(module_id, extra_env=extra_env, options=options)
+            log_dir = self.root / "logs"
+            log_dir.mkdir(exist_ok=True)
+            log_handle = open(
+                log_dir / f"{module_id}-{mode}.log",
+                "a",
+                encoding="utf-8",
+                errors="replace",
+            )
+            creationflags = 0
+            if os.name == "nt":
+                creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=str(cwd),
+                    env=env,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    creationflags=creationflags,
+                )
+            finally:
+                # Child inherits/duplicates the handle; Hub does not need to keep
+                # a second file object alive for a helper it does not own long-term.
+                log_handle.close()
+            return {
+                "ok": True,
+                "helper": True,
+                "mode": mode,
+                "pid": process.pid,
+                "port": self.port(module_id),
+                "command": command,
+            }
+
     def stop(self, module_id: str) -> dict[str, Any]:
         with self.lock:
             process = self.processes.get(module_id)
             if not process or process.poll() is not None:
-                # Do not kill or silently detach externally managed processes.
                 return {
                     "ok": True,
                     "already_stopped": True,
@@ -282,6 +351,8 @@ class ModuleManager:
             "version": item.get("version"),
             "role": item.get("role"),
             "repo": item.get("repo"),
+            "repo_key": item.get("repo_key"),
+            "port_env": item.get("port_env"),
             "cwd": str(self._cwd(module_id)),
             "port": port,
             "base_url": self.base_url(module_id),
