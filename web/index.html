@@ -49,6 +49,17 @@
             <option value="pc">Âm thanh PC</option>
           </select>
         </label>
+        <label id="sttLangWrap" class="hidden">Ngôn ngữ đầu vào STT
+          <select id="sttLang">
+            <option value="auto" selected>Auto - nhận diện transcript</option>
+            <option value="vi-VN">Tiếng Việt (vi-VN)</option>
+            <option value="en-US">English (en-US)</option>
+            <option value="ja-JP">日本語 (ja-JP)</option>
+            <option value="ko-KR">한국어 (ko-KR)</option>
+            <option value="zh-CN">中文 (zh-CN)</option>
+            <option value="ru-RU">Русский (ru-RU)</option>
+          </select>
+        </label>
         <label class="check-row">
           <input id="translateEnabled" type="checkbox">
           <span>Dùng Google Translate</span>
@@ -72,6 +83,7 @@
           <span>Tự khởi động module cần thiết</span>
         </label>
       </div>
+      <div class="hint" id="sttAutoHint">STT v2.7 push từng câu mới trực tiếp sang Hub. Chế độ Auto nhận diện ngôn ngữ trên transcript sau khi Chrome trả kết quả.</div>
       <div class="buttons">
         <button id="startPipeline" class="primary big">▶ START</button>
         <button id="stopPipeline" class="danger big">■ STOP</button>
