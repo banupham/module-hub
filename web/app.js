@@ -157,7 +157,7 @@ function applyProfile(profile) {
   if (!profile) return;
   document.getElementById('sourceSelect').value = profile.source || 'tiktok';
   document.getElementById('translateEnabled').checked = !!profile.translate;
-  document.getElementById('targetLang').value = profile.target_lang || 'vi';
+  document.getElementById('targetLang').value = profile.target_lang || profile.tts_lang || 'vi';
   document.getElementById('ttsEnabled').checked = profile.tts !== false;
   if (profile.stt_source) document.getElementById('sttSource').value = profile.stt_source;
   toggleSourceFields();
@@ -184,6 +184,7 @@ async function loadProfiles() {
 }
 
 function pipelineConfig() {
+  const outputLang = document.getElementById('targetLang').value;
   return {
     source: document.getElementById('sourceSelect').value,
     tiktok_username: document.getElementById('tiktokUsername').value.trim(),
@@ -192,9 +193,10 @@ function pipelineConfig() {
     stt_sensitivity: 'balanced',
     translate: document.getElementById('translateEnabled').checked,
     source_lang: 'auto',
-    target_lang: document.getElementById('targetLang').value,
+    target_lang: outputLang,
     translate_mode: 'advanced',
     tts: document.getElementById('ttsEnabled').checked,
+    tts_lang: outputLang,
   };
 }
 
@@ -202,15 +204,16 @@ async function startPipeline() {
   const stateBox = document.getElementById('pipelineState');
   stateBox.textContent = 'Đang cấp port và khởi động module…';
   try {
+    const config = pipelineConfig();
     const data = await api('/api/pipeline/start', {
       method: 'POST',
       body: JSON.stringify({
-        config: pipelineConfig(),
+        config,
         auto_start: document.getElementById('autoStart').checked,
       }),
     });
     const ports = Object.entries(data.allocated_ports || {}).map(([k, v]) => `${k}:${v}`).join(' · ');
-    stateBox.textContent = `RUNNING${ports ? ' · ' + ports : ''}`;
+    stateBox.textContent = `RUNNING · output:${config.tts_lang}${ports ? ' · ' + ports : ''}`;
     stateBox.className = 'pipeline-state running';
     await refreshModules();
   } catch (err) {
@@ -223,8 +226,9 @@ async function stopPipeline() {
   try {
     await api('/api/pipeline/stop', { method: 'POST', body: '{}' });
     const box = document.getElementById('pipelineState');
-    box.textContent = 'Pipeline đã dừng. Module có thể vẫn chạy để tái sử dụng.';
+    box.textContent = 'Pipeline đã dừng. Các module do Hub quản lý đã được dừng.';
     box.className = 'pipeline-state';
+    await refreshModules();
   } catch (err) { alert(err.message); }
 }
 
