@@ -39,12 +39,6 @@ class PipelineEngine:
             return list(self.events)[: max(1, min(limit, 200))]
 
     def _sync_tts_language(self) -> None:
-        """Make the Speaker language follow this pipeline's output language.
-
-        The Google TTS API already accepts dynamic `lang`; the Speaker keeps a
-        standalone persisted setting. Hub updates only that language while
-        preserving voice/filter/chunk settings configured in the Speaker UI.
-        """
         if not self.config.get("tts"):
             return
 
@@ -87,7 +81,13 @@ class PipelineEngine:
         self.stop_event.clear()
         self.last_stt_seq = 0
         self.log("pipeline", "Pipeline started", config=self.config)
-        if self.config.get("source") == "stt":
+
+        # V2.7 uses push by default: STT POSTs every newly-finalized sentence to
+        # Hub /stt-event. Poll remains a fallback for old/external STT modules.
+        if (
+            self.config.get("source") == "stt"
+            and str(self.config.get("stt_transport") or "push").lower() != "push"
+        ):
             self.poll_thread = threading.Thread(target=self._poll_stt, daemon=True, name="stt-poller")
             self.poll_thread.start()
 
@@ -100,7 +100,6 @@ class PipelineEngine:
         self.poll_thread = None
 
     def _wait_stt_ready(self) -> bool:
-        """Wait quietly while Hub assigns/starts the STT dynamic endpoint."""
         while self.active and not self.stop_event.is_set():
             try:
                 if self.manager.port("stt") is None:
@@ -115,10 +114,16 @@ class PipelineEngine:
         return False
 
     def _poll_stt(self) -> None:
-        # pipeline.start() can run a fraction of a second before start_source()
-        # has allocated the STT port. That is normal startup, not an error.
         if not self._wait_stt_ready():
             return
+
+        # Start at the current server cursor so a newly-started Hub session does
+        # not replay sentences that existed before this pipeline started.
+        try:
+            state = requests.get(self.manager.endpoint("stt", "/health"), timeout=2).json()
+            self.last_stt_seq = int(state.get("sentenceSeq") or 0)
+        except Exception:
+            self.last_stt_seq = 0
 
         while self.active and not self.stop_event.is_set():
             try:
@@ -144,12 +149,7 @@ class PipelineEngine:
                 text = str(result.get("text") or "").strip()
                 if not text:
                     continue
-                event = {
-                    "eventId": f"stt-{uuid.uuid4().hex[:12]}",
-                    "eventType": "comment",
-                    "user": {"id": "stt", "uniqueId": "stt", "displayName": "Google STT"},
-                    "payload": {"text": text, "source": "stt", "stt": result},
-                }
+                event = self.stt_sentence_to_event(result)
                 self.process_event(event)
             except Exception as exc:
                 if self.active and not self.stop_event.is_set():
@@ -164,16 +164,34 @@ class PipelineEngine:
                     self.log("error", f"STT poll: {exc}")
                 self.stop_event.wait(1.5)
 
+    def stt_sentence_to_event(self, sentence: dict[str, Any]) -> dict[str, Any]:
+        text = str(sentence.get("text") or "").strip()
+        instance_id = str(sentence.get("instanceId") or "local")
+        seq = int(sentence.get("seq") or 0)
+        detected = sentence.get("detectedLang") or sentence.get("lang")
+        return {
+            "eventId": f"stt-{instance_id}-{seq or uuid.uuid4().hex[:8]}",
+            "eventType": "comment",
+            "user": {"id": "stt", "uniqueId": "stt", "displayName": "Google STT"},
+            "payload": {
+                "text": text,
+                "source": "stt",
+                "lang": sentence.get("lang"),
+                "detectedLang": detected,
+                "stt": sentence,
+            },
+        }
+
     def process_event(self, event: dict[str, Any]) -> dict[str, Any]:
-        # STOP means a hard boundary for this pipeline session. A module running
-        # outside Hub may still POST to /tiktok-event, but those events must not
-        # appear in the active Event log or reach Translate/TTS while stopped.
         if not self.active:
             return {"ok": True, "accepted": True, "pipeline_active": False}
 
         event_type = str(event.get("eventType") or "")
-        text = str((event.get("payload") or {}).get("text") or "").strip()
-        self.log("input", f"{event_type}: {text or '(no text)'}", event=event)
+        payload = event.get("payload") or {}
+        text = str(payload.get("text") or "").strip()
+        detected_lang = payload.get("detectedLang")
+        suffix = f" [{detected_lang}]" if detected_lang else ""
+        self.log("input", f"{event_type}{suffix}: {text or '(no text)'}", event=event)
 
         if event_type != "comment" or not text:
             return {"ok": True, "accepted": True, "ignored": True}
@@ -205,6 +223,7 @@ class PipelineEngine:
             "ok": True,
             "accepted": True,
             "text": text,
+            "detected_lang": detected_lang,
             "output_text": output_text,
             "translation": translation,
             "tts": tts_result,
