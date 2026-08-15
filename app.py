@@ -6,6 +6,7 @@ import json
 import os
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +31,10 @@ pipeline = PipelineEngine(manager)
 INSTANCE_ID = uuid.uuid4().hex[:12]
 STARTED_AT = time.time()
 
-# Source first, then downstream. Speaker must stop before TTS API.
 PIPELINE_STOP_ORDER = ("tiktok", "stt", "tts_speaker", "translate", "tts_api")
+STT_SEEN_MAX = 2000
+_stt_seen: set[str] = set()
+_stt_seen_order: deque[str] = deque()
 
 
 def load_profiles() -> list[dict[str, Any]]:
@@ -120,12 +123,6 @@ def _prepare_stt_stop() -> None:
 
 
 def stop_managed_modules(module_ids: set[str] | list[str] | tuple[str, ...]) -> list[dict[str, Any]]:
-    """Stop only processes owned by this Hub instance.
-
-    Externally attached modules remain alive and attached; STOP only freezes the
-    pipeline for those endpoints. This prevents Hub from killing a user-managed
-    service that it did not start.
-    """
     wanted = set(module_ids)
     results: list[dict[str, Any]] = []
     for module_id in PIPELINE_STOP_ORDER:
@@ -150,18 +147,40 @@ def stop_managed_modules(module_ids: set[str] | list[str] | tuple[str, ...]) -> 
     return results
 
 
+def configure_stt_push(config: dict[str, Any]) -> dict[str, Any]:
+    callback = f"http://{HUB_CALLBACK_HOST}:{HUB_PORT}/stt-event"
+    url = manager.endpoint("stt", "/api/webhooks")
+    response = requests.post(url, json={"urls": [callback]}, timeout=4)
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("ok", True):
+        raise RuntimeError(data.get("error") or "stt_push_config_failed")
+    return {"ok": True, "callback": callback, "detail": data}
+
+
 def start_stt(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Keep the STT HTTP server owned by Hub; Chrome is only a helper process."""
+    """Start STT server, register Hub push callback, then launch Chrome helper."""
     results: list[dict[str, Any]] = []
     source_mode = str(config.get("stt_source") or "mic")
     if source_mode not in {"mic", "pc", "server"}:
         source_mode = "mic"
+    stt_lang = str(config.get("stt_lang") or "auto").strip() or "auto"
 
     results.append(ensure_started("stt", mode="server", wait_seconds=15))
 
+    if str(config.get("stt_transport") or "push").lower() == "push":
+        push = configure_stt_push(config)
+        push["module"] = "stt-push"
+        results.append(push)
+
     if source_mode in {"mic", "pc"}:
-        helper = manager.launch_helper("stt", source_mode)
+        helper = manager.launch_helper(
+            "stt",
+            source_mode,
+            extra_env={"STT_LANG": stt_lang},
+        )
         helper["module"] = "stt-client"
+        helper["lang"] = stt_lang
         results.append(helper)
     else:
         start_url = manager.endpoint("stt", "/api/start")
@@ -169,7 +188,7 @@ def start_stt(config: dict[str, Any]) -> list[dict[str, Any]]:
             start_url,
             json={
                 "source": "mic",
-                "lang": config.get("stt_lang", "en-US"),
+                "lang": stt_lang,
                 "continuous": True,
                 "interim": True,
                 "segmentation": True,
@@ -237,7 +256,6 @@ def validate_connected_modules(config: dict[str, Any]) -> None:
 
 
 def cleanup_on_exit() -> None:
-    """Best-effort cleanup when RUN.cmd/Hub exits normally or by Ctrl+C."""
     try:
         pipeline.stop()
     except Exception:
@@ -277,6 +295,7 @@ def middleware_health():
             "instanceToken": INSTANCE_ID,
             "pid": os.getpid(),
             "eventPath": "/tiktok-event",
+            "sttEventPath": "/stt-event",
             "hub": "module-hub",
             "version": manager.hub_version,
             "port": HUB_PORT,
@@ -331,7 +350,11 @@ def api_module_start(module_id: str):
 
         if module_id == "stt" and mode in {"mic", "pc"}:
             base = ensure_started("stt", mode="server", requested_port=requested_port, wait_seconds=15)
-            helper = manager.launch_helper("stt", mode)
+            helper = manager.launch_helper(
+                "stt",
+                mode,
+                extra_env={"STT_LANG": str(data.get("lang") or "auto")},
+            )
             return jsonify({"ok": True, "server": base, "client": helper})
 
         extra_env = data.get("env") or {}
@@ -397,20 +420,19 @@ def api_pipeline_state():
 @app.post("/api/pipeline/start")
 def api_pipeline_start():
     data = request.get_json(silent=True) or {}
-    config = data.get("config") or data
+    config = dict(data.get("config") or data)
     auto_start = bool(data.get("auto_start", True))
+
+    if config.get("source") == "stt":
+        config.setdefault("stt_transport", "push")
+        config.setdefault("stt_lang", "auto")
 
     previous_config = dict(pipeline.config)
     pipeline.stop()
     stopped: list[dict[str, Any]] = []
 
-    # Clean modules owned by the previous pipeline first. This prevents a stale
-    # TikTok process from continuing with an old username or old WEBHOOK_URLS.
     if previous_config:
         stopped.extend(stop_managed_modules(modules_for_config(previous_config)))
-
-    # Auto-start means Hub owns this session. Restart all required managed
-    # modules so every run receives fresh dynamic ports, username and endpoints.
     if auto_start:
         stopped.extend(stop_managed_modules(modules_for_config(config)))
 
@@ -422,6 +444,8 @@ def api_pipeline_start():
             started.extend(start_source(config))
         else:
             validate_connected_modules(config)
+            if config.get("source") == "stt" and config.get("stt_transport") == "push":
+                configure_stt_push(config)
             pipeline.start(config)
         return jsonify(
             {
@@ -435,8 +459,6 @@ def api_pipeline_start():
         )
     except Exception as exc:
         pipeline.stop()
-        # Do not leave partially-started modules behind when one dependency or
-        # source fails during pipeline startup.
         if auto_start:
             stop_managed_modules(modules_for_config(config))
         pipeline.config = {}
@@ -477,8 +499,34 @@ def tiktok_event():
         return jsonify(result)
     except Exception as exc:
         pipeline.log("error", f"TikTok event: {exc}", event=event)
-        # Middleware should receive 2xx so a downstream failure does not trigger
-        # a webhook retry storm.
+        return jsonify({"ok": False, "accepted": True, "error": str(exc)}), 200
+
+
+@app.post("/stt-event")
+def stt_event():
+    sentence = request.get_json(silent=True) or {}
+    try:
+        if pipeline.config.get("source") != "stt":
+            return jsonify({"ok": True, "ignored": True, "reason": "stt_not_active"})
+
+        instance_id = str(sentence.get("instanceId") or "local")
+        seq = int(sentence.get("seq") or 0)
+        marker = f"{instance_id}:{seq}" if seq else ""
+        if marker:
+            if marker in _stt_seen:
+                return jsonify({"ok": True, "duplicate": True, "marker": marker})
+            _stt_seen.add(marker)
+            _stt_seen_order.append(marker)
+            while len(_stt_seen_order) > STT_SEEN_MAX:
+                _stt_seen.discard(_stt_seen_order.popleft())
+
+        event = pipeline.stt_sentence_to_event(sentence)
+        result = pipeline.process_event(event)
+        return jsonify({"ok": True, "marker": marker or None, "result": result})
+    except Exception as exc:
+        pipeline.log("error", f"STT event: {exc}", sentence=sentence)
+        # Return 2xx to prevent localhost retry storms; the event remains visible
+        # in Hub logs for diagnosis.
         return jsonify({"ok": False, "accepted": True, "error": str(exc)}), 200
 
 
