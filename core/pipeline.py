@@ -86,16 +86,21 @@ class PipelineEngine:
                 }
                 self.process_event(event)
             except Exception as exc:
-                self.log("error", f"STT poll: {exc}")
+                if self.active and not self.stop_event.is_set():
+                    self.log("error", f"STT poll: {exc}")
                 self.stop_event.wait(1.5)
 
     def process_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        # STOP means a hard boundary for this pipeline session. A module running
+        # outside Hub may still POST to /tiktok-event, but those events must not
+        # appear in the active Event log or reach Translate/TTS while stopped.
+        if not self.active:
+            return {"ok": True, "accepted": True, "pipeline_active": False}
+
         event_type = str(event.get("eventType") or "")
         text = str((event.get("payload") or {}).get("text") or "").strip()
         self.log("input", f"{event_type}: {text or '(no text)'}", event=event)
 
-        if not self.active:
-            return {"ok": True, "accepted": True, "pipeline_active": False}
         if event_type != "comment" or not text:
             return {"ok": True, "accepted": True, "ignored": True}
 
