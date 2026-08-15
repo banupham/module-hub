@@ -1,0 +1,9 @@
+{
+  "id": "stt_translate_tts",
+  "name": "STT → Dịch → TTS",
+  "source": "stt",
+  "stt_source": "mic",
+  "translate": true,
+  "target_lang": "vi",
+  "tts": true
+}
