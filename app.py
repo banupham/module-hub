@@ -85,6 +85,41 @@ def ensure_started(
     return result
 
 
+def start_stt(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Keep the STT HTTP server owned by Hub; Chrome is only a helper process."""
+    results: list[dict[str, Any]] = []
+    source_mode = str(config.get("stt_source") or "mic")
+    if source_mode not in {"mic", "pc", "server"}:
+        source_mode = "mic"
+
+    # START_SERVER_ONLY blocks and remains owned by ModuleManager, so its dynamic
+    # port can be stopped/released reliably. The Chrome launcher sees this server
+    # already online and therefore does not create a second orphaned server.
+    results.append(ensure_started("stt", mode="server", wait_seconds=15))
+
+    if source_mode in {"mic", "pc"}:
+        helper = manager.launch_helper("stt", source_mode)
+        helper["module"] = "stt-client"
+        results.append(helper)
+    else:
+        start_url = manager.endpoint("stt", "/api/start")
+        response = requests.post(
+            start_url,
+            json={
+                "source": "mic",
+                "lang": config.get("stt_lang", "en-US"),
+                "continuous": True,
+                "interim": True,
+                "segmentation": True,
+                "sensitivity": config.get("stt_sensitivity", "balanced"),
+            },
+            timeout=5,
+        )
+        response.raise_for_status()
+
+    return results
+
+
 def start_dependencies(config: dict[str, Any]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
 
@@ -110,48 +145,26 @@ def start_dependencies(config: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def start_source(config: dict[str, Any]) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
     source = config.get("source")
 
     if source == "stt":
-        mode = str(config.get("stt_source") or "mic")
-        if mode not in {"mic", "pc", "server"}:
-            mode = "mic"
-        results.append(ensure_started("stt", mode=mode, wait_seconds=15))
+        return start_stt(config)
 
-        if mode == "server":
-            start_url = manager.endpoint("stt", "/api/start")
-            response = requests.post(
-                start_url,
-                json={
-                    "source": "mic",
-                    "lang": config.get("stt_lang", "en-US"),
-                    "continuous": True,
-                    "interim": True,
-                    "segmentation": True,
-                    "sensitivity": config.get("stt_sensitivity", "balanced"),
-                },
-                timeout=5,
-            )
-            response.raise_for_status()
-
-    elif source == "tiktok":
+    if source == "tiktok":
         username = str(config.get("tiktok_username") or "").strip()
         if not username:
             raise ValueError("Thiếu TikTok username")
         callback = f"http://{HUB_CALLBACK_HOST}:{HUB_PORT}/tiktok-event"
-        results.append(
+        return [
             ensure_started(
                 "tiktok",
                 options={"username": username},
                 extra_env={"WEBHOOK_URLS": callback},
                 wait_seconds=10,
             )
-        )
-    else:
-        raise ValueError(f"Nguồn pipeline không hợp lệ: {source}")
+        ]
 
-    return results
+    raise ValueError(f"Nguồn pipeline không hợp lệ: {source}")
 
 
 def validate_connected_modules(config: dict[str, Any]) -> None:
@@ -162,6 +175,8 @@ def validate_connected_modules(config: dict[str, Any]) -> None:
         required.extend(["tts_api", "tts_speaker"])
     if config.get("source") == "stt":
         required.append("stt")
+    elif config.get("source") == "tiktok":
+        required.append("tiktok")
 
     missing = [module_id for module_id in required if not manager.health(module_id, 0.6)["online"]]
     if missing:
@@ -237,12 +252,29 @@ def api_module_start(module_id: str):
         requested_port = data.get("port")
         if requested_port in ("", None, 0, "0"):
             requested_port = None
+        requested_port = int(requested_port) if requested_port is not None else None
+        mode = str(data.get("mode") or "default")
+
+        if module_id == "stt" and mode in {"mic", "pc"}:
+            base = ensure_started("stt", mode="server", requested_port=requested_port, wait_seconds=15)
+            helper = manager.launch_helper("stt", mode)
+            return jsonify({"ok": True, "server": base, "client": helper})
+
+        extra_env = data.get("env") or {}
+        if module_id == "tts_speaker" and manager.base_url("tts_api"):
+            tts_base = manager.base_url("tts_api")
+            extra_env = {
+                "LOA_TTS_API_URL": f"{tts_base}/tts",
+                "LOA_TTS_HEALTH_URL": f"{tts_base}/health",
+                **extra_env,
+            }
+
         result = manager.start(
             module_id,
-            mode=str(data.get("mode") or "default"),
+            mode=mode,
             options=data.get("options") or {},
-            requested_port=int(requested_port) if requested_port is not None else None,
-            extra_env=data.get("env") or {},
+            requested_port=requested_port,
+            extra_env=extra_env,
         )
         return jsonify(result)
     except Exception as exc:
@@ -252,6 +284,16 @@ def api_module_start(module_id: str):
 @app.post("/api/modules/<module_id>/stop")
 def api_module_stop(module_id: str):
     try:
+        current = manager.health(module_id, timeout=0.3)
+        if module_id == "stt" and current.get("managed") and current.get("port"):
+            try:
+                requests.post(manager.endpoint("stt", "/api/release"), json={}, timeout=2)
+            except Exception:
+                pass
+            try:
+                manager.launch_helper("stt", "close")
+            except Exception:
+                pass
         return jsonify(manager.stop(module_id))
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
